@@ -1,15 +1,70 @@
-*.ipynb*
-*.pyc
-*.swp
+# =============================================================
+# PHAROS / KnowAgent 통합 .gitignore
+# =============================================================
 
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+*.egg-info/
+.pytest_cache/
+
+# --- 환경/IDE ---
+.env
+.env.local
+.env.*.local
 .DS_Store
 .idea/
-.pytest_cache/
 .vscode/
+.claude/
 
-__pycache__/
+# --- Jupyter ---
+*.ipynb*
+
+# --- KnowAgent 원본 unrelated ---
 webshop/data/
-webshop/search_engine/
 webshop/search_engine/
 webshop/transfer/flagged
 webshop/user_session_logs/
+
+# =============================================================
+# PHAROS — 푸시하지 않을 것들
+# =============================================================
+
+# 캐시 (~1GB)
+experiments/.cache/
+
+# 모든 실험 결과 (코드만 푸시)
+experiments/results/
+
+# 시뮬레이션/테스트 코드
+experiments/generate_extended_results.py
+experiments/mock_llm.py
+experiments/test_pipeline.py
+
+# Paper drafts / 분석 문서
+paper/
+paper_acl/
+paper_acl_ko/
+paper_v25_en/
+paper_v25_ko_md/
+paper_v25_ko_tex/
+paper_v25_ko.md
+REPORT.md
+ICL_EXAMPLES_ANALYSIS.md
+
+# 큰 zip / pdf
+*.zip
+*.pdf
+
+# LaTeX 빌드 부산물
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc

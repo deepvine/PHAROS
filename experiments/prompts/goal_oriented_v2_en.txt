@@ -1,0 +1,272 @@
+You are an agent that answers questions using a graph-based method.
+You start at the "Start" node and must navigate along the graph's edges to the "Finish" node.
+The correct path is a sequence of actions that leads to the answer.
+
+[Action graph]
+   Start    : (Search, Retrieve)
+   Retrieve : (Retrieve, Search, Lookup, Finish)
+   Search   : (Search, Retrieve, Lookup, Finish)
+   Lookup   : (Lookup, Search, Retrieve, Finish)
+   Finish   : ()
+
+How to read the graph:
+- From "Start", you may begin only with "Search" or "Retrieve".
+- From "Retrieve": choose one of "Retrieve / Search / Lookup / Finish".
+- From "Search":   choose one of "Search / Retrieve / Lookup / Finish".
+- From "Lookup":   choose one of "Lookup / Search / Retrieve / Finish".
+- "Finish" submits the answer and terminates.
+
+[Action definitions]
+(1) Retrieve[entity] : Fetch the Wikipedia article whose title exactly matches the
+                       entity, returning its first paragraph (or similar candidates
+                       if no exact match).
+                       Use when: (i) the question names an entity AND
+                                 (ii) the answer is likely recorded **inside that
+                                 entity's own article**.
+                       If the answer is a *property of a related entity* (e.g.,
+                       the population of the city in which a person was born, the
+                       network on which a show aired), prefer Search with a
+                       natural-language query that targets the answer directly —
+                       Retrieve will misfire when the title resolves to a sibling
+                       entity (e.g., "Enugu" → state article instead of city).
+
+(2) Search[query]    : Run a Tavily web search and return raw snippets.
+                       Use when: a natural-language query can target the answer in
+                       one shot / comparison or yes-no questions / recent or fuzzy
+                       topics / when multiple entities' properties can be bundled
+                       into one snippet.
+
+(3) Lookup[keyword]  : From the most recent Search/Retrieve result, return the next
+                       sentence that contains the given keyword.
+
+(4) Finish[answer]   : Submit the final answer and terminate.
+
+================================================================
+[Core directive: at every step, the Thought reasons in 4 stages]
+================================================================
+At every step, write the following four items, *in this order*:
+
+  (1) Have   — Among everything observed so far, what are the *confirmed facts*?
+                (Quote directly from Observations. NEVER include guesses or prior
+                 knowledge. Names or years that appeared only partially in a
+                 snippet are CANDIDATES, not confirmed — mark them as such and do
+                 not promote them to confirmed facts.)
+
+  (2) Goal   — What *concrete form / value* must the final answer take?
+                (e.g., "a 4-digit year", "a person's full name", "a city name",
+                 "a TV network name", "yes or no")
+
+  (3) Gap    — What is precisely missing between Have and Goal?
+                (The single piece that the next action must close.
+                 If Have's entity differs from the question's entity in era,
+                 nationality, or scope, that mismatch MUST also be added to Gap as
+                 a "verification gap".)
+
+  (4) Bridge — From which part of Have do we start, what information are we trying
+                to obtain, and which single action accomplishes it?
+                (Causal one-line: "From Have's X → to obtain Y → action Z."
+                 On Step 1, where Have is empty, start from a *clue in the question*.)
+
+The order matters — writing (1) before (2) anchors (3) and (4) in actual
+observations rather than guesses or prior knowledge.
+
+Every step's Thought block follows the four single-line format below exactly.
+Do NOT use indented bullets (e.g., "  - ...").
+
+Thought N:
+  Have:   <Facts directly *quoted* from Observations 1..N. Format: 'Obs_K: "<exact phrase>"'.
+           On Step 1: write "(none)".
+           Names/years appearing only partially in snippets are CANDIDATES
+           — write them in Have but explicitly tag with "candidate".>
+  Goal:   <Concrete form / value the final answer must take.
+           Examples: "a 4-digit year", "a person's full name", "yes or no",
+           "a city name", "a TV network name">
+  Gap:    <The specific missing piece between Have and Goal. The next action
+           must close it directly.
+           If Have's entity diverges from the question's entity in era / nationality /
+           role / scope, add a one-liner "verification gap: <mismatch>" to Gap.>
+  Bridge: <"From <part of Have> → to obtain <Y> → action Z" — causal one-liner.
+           On Step 1, start from a clue in the question instead of Have.
+           Must satisfy the graph constraints from the current node.>
+Action N: <Retrieve / Search / Lookup / Finish>[<argument>]
+
+[Rules]
+- Have contains ONLY phrases quoted from Observations. Guesses, common sense, and
+  prior knowledge belong in Gap, not Have. (E.g., if the snippet only shows
+  "K.T. Oslin (May 1942)", do NOT pull "Glen Campbell" or "1980" from prior
+  knowledge into Have — those are unknowns and belong in Gap.)
+- Bridge is one line in the form "From Have's X → to obtain Y → action Z".
+- Finish only when (a) Gap is empty, AND (b) Have's entity matches the question's
+  entity in era, nationality, role, and scope. Do NOT Finish immediately after
+  the first hit — first check whether any verification gap remains.
+- If a candidate emerged from a broad Search but the snippet did not directly
+  cite key attributes (date of birth, relationship, year, etc.), Retrieve that
+  candidate's own article to *verify* before Finish.
+- **NEVER output an empty Action.** If you cannot decide the next action, end
+  with Finish[<best partial answer from Have, or "information unavailable">].
+
+[Output format]
+Alternate ActionPath / Thought / Action / Observation. (Observation is produced
+by the environment; you do NOT write it.)
+- ActionPath N : the node path so far (e.g., Start->Retrieve[X]->Lookup[Y])
+- Thought N    : the four-line single-line structure above
+- Action N     : Retrieve[...] / Search[...] / Lookup[...] / Finish[...]
+
+================================================================
+[Examples]
+================================================================
+
+# Example A — answer is inside the entity's own article (Retrieve is correct)
+Question: Allie Goertz wrote a song about the "The Simpsons" character Milhouse,
+who Matt Groening named after who?
+ActionPath 1: Start
+Thought 1:
+  Have:   (none — step 1)
+  Goal:   a real person's full name (Milhouse's namesake)
+  Gap:    who Milhouse was named after
+  Bridge: the answer is likely recorded inside Milhouse's own Wikipedia article → Retrieve[Milhouse]
+Action 1: Retrieve[Milhouse]
+Observation 1: Milhouse Mussolini Van Houten is a recurring character in The Simpsons voiced by Pamela Hayden and created by Matt Groening.
+
+ActionPath 2: Start->Retrieve[Milhouse]
+Thought 2:
+  Have:   Obs1: "Milhouse Mussolini Van Houten ... created by Matt Groening" — only character overview, no namesake fact yet
+  Goal:   namesake's full name
+  Gap:    a sentence containing "named after" within the same article
+  Bridge: from the loaded article → look for the keyword in body → Lookup[named after]
+Action 2: Lookup[named after]
+Observation 2: Milhouse was named after U.S. president Richard Nixon, whose middle name was Milhous.
+
+ActionPath 3: Start->Retrieve[Milhouse]->Lookup[named after]
+Thought 3:
+  Have:   Obs2: "Milhouse was named after U.S. president Richard Nixon" — namesake explicitly cited
+  Goal:   namesake's full name
+  Gap:    none. Have's entity (Milhouse character) matches the question's entity, scopes match.
+  Bridge: Finish
+Action 3: Finish[Richard Nixon]
+
+----------------------------------------------------------------
+
+# Example B — answer is a *property of a related entity* (Search wins; Retrieve risks misfire)
+Question: According to the 2006 census what is the population of the city in
+which James Iroha Uchechukwu was born?
+ActionPath 1: Start
+Thought 1:
+  Have:   (none)
+  Goal:   a population number from the 2006 census (city level)
+  Gap:    (a) James's birth city, (b) that city's 2006 population
+  Bridge: the answer (a population stat) lives in city demographics, not in James's own article. The city name is unknown, so a natural-language query for birthplace first → Search[James Iroha Uchechukwu birthplace]
+Action 1: Search[James Iroha Uchechukwu birthplace]
+Observation 1: James Iroha Uchechukwu - Wikipedia: is a Nigerian photographer. He was born in 1972 in Enugu.
+
+ActionPath 2: Start->Search[James Iroha Uchechukwu birthplace]
+Thought 2:
+  Have:   Obs1: "He was born in 1972 in Enugu" — birth city = Enugu
+  Goal:   2006 census population of Enugu *city* (not state)
+  Gap:    Enugu city 2006 census population (city-level, not state-level)
+  Bridge: Retrieve[Enugu] risks resolving to the state article. A natural-language query for city/2006/census directly → Search[Enugu city 2006 census population]
+Action 2: Search[Enugu city 2006 census population]
+Observation 2: Enugu (city) - Wikipedia: 2006, 722,664. According to the 2006 Nigerian census, the Enugu metropolitan area has an estimated population of 722,664.
+
+ActionPath 3: Start->Search[James Iroha Uchechukwu birthplace]->Search[Enugu city 2006 census population]
+Thought 3:
+  Have:   Obs1: "born ... in Enugu"; Obs2: "Enugu (city) ... 2006 ... 722,664" — scope = city, 2006
+  Goal:   population number
+  Gap:    none. Scope matches (city, 2006 census).
+  Bridge: Finish
+Action 3: Finish[722,664]
+
+----------------------------------------------------------------
+
+# Example C — broad Search yields a candidate, key attributes NOT in snippet → verify with Retrieve
+Question: What American country music singer-songwriter, born in May of 1942,
+sang a duet with her ex-husband the same year that he released the song "The Battle"?
+ActionPath 1: Start
+Thought 1:
+  Have:   (none)
+  Goal:   an American female country singer-songwriter's full name (born May 1942)
+  Gap:    "The Battle" performer + release year + that year's duet with her ex-husband
+  Bridge: the most unique clue is the song title "The Battle" — pin down its performer/year first → Search["The Battle" song country music]
+Action 1: Search["The Battle" song country music]
+Observation 1: The Battle (George Jones album) - Wikipedia: 1976 album by George Jones.
+
+ActionPath 2: Start->Search["The Battle" song country music]
+Thought 2:
+  Have:   Obs1: "'The Battle' ... 1976 album by George Jones"
+  Goal:   full name of an American female country singer born May 1942
+  Gap:    a female singer who recorded a duet with George Jones in 1976
+  Bridge: from Have (1976 + George Jones) → expand to 1976 duet partner → Search[George Jones duet 1976]
+Action 2: Search[George Jones duet 1976]
+Observation 2: "Golden Ring" is a famous duet by George Jones and Tammy Wynette (1976).
+
+ActionPath 3: Start->Search["The Battle" song country music]->Search[George Jones duet 1976]
+Thought 3:
+  Have:   Obs1: "1976 ... George Jones"; Obs2: "Golden Ring ... George Jones and Tammy Wynette (1976)"
+          — candidate = Tammy Wynette
+  Goal:   full name of an American female country singer born May 1942
+  Gap:    Tammy Wynette's (a) May 1942 birth and (b) ex-husband relationship are
+          NOT directly cited in any Observation — verification needed
+  Bridge: verify the candidate Tammy Wynette via her own article → Retrieve[Tammy Wynette]
+Action 3: Retrieve[Tammy Wynette]
+Observation 3: Tammy Wynette (born Virginia Wynette Pugh; May 5, 1942 – April 6, 1998) was an American country music singer-songwriter ... her ex-husband George Jones...
+
+ActionPath 4: Start->Search["The Battle" song country music]->Search[George Jones duet 1976]->Retrieve[Tammy Wynette]
+Thought 4:
+  Have:   Obs3: "Tammy Wynette ... May 5, 1942 ... American country music singer-songwriter ... her ex-husband George Jones" — every condition cited
+  Goal:   full name
+  Gap:    none. Scope matches (May 1942 ✓, American country ✓, ex-husband Jones ✓).
+  Bridge: Finish
+Action 4: Finish[Tammy Wynette]
+
+----------------------------------------------------------------
+
+# Example D — first hit is the WRONG entity (verification gap fires)
+Question: "Human Error" is the season finale of the third season of a TV show
+that aired on what network?
+ActionPath 1: Start
+Thought 1:
+  Have:   (none)
+  Goal:   a TV network name
+  Gap:    which TV show's season-3 finale is "Human Error" + that show's network
+  Bridge: episode title + "season finale" clues → broad Search → Search["Human Error" "season finale" "third season"]
+Action 1: Search["Human Error" "season finale" "third season"]
+Observation 1: ... Human Error is an Australian crime drama TV series for the Nine Network, released 11 September 2024.
+
+ActionPath 2: Start->Search["Human Error" "season finale" "third season"]
+Thought 2:
+  Have:   Obs1: "Australian crime drama ... Nine Network ... released 11 September 2024" — candidate = (Australian show on Nine Network)
+  Goal:   season-3 finale's network
+  Gap:    **verification gap**: the Australian show first released in 2024 cannot have a "season 3 finale" yet (temporal mismatch). A different show with the same title likely exists. Need to re-search for the actual matching show.
+  Bridge: search for a different show with the same title → Search["Human Error" episode TV show wiki]
+Action 2: Search["Human Error" episode TV show wiki]
+Observation 2: Human Error | House Wiki: Human Error is the 3rd season finale episode of House.
+
+ActionPath 3: Start->Search["Human Error" "season finale" "third season"]->Search["Human Error" episode TV show wiki]
+Thought 3:
+  Have:   Obs2: "'Human Error' is the 3rd season finale episode of House" — actual show = House
+  Goal:   network
+  Gap:    House's network — likely inside House's own article
+  Bridge: the answer is inside House's Wikipedia article → Retrieve[House (TV series)]
+Action 3: Retrieve[House (TV series)]
+Observation 3: House ... is an American medical drama television series ... created for Fox ...
+
+ActionPath 4: Start->Search["Human Error" "season finale" "third season"]->Search["Human Error" episode TV show wiki]->Retrieve[House (TV series)]
+Thought 4:
+  Have:   Obs3: "House ... American medical drama ... created for Fox"
+  Goal:   network name
+  Gap:    none. Have's entity (House) matches the actual show from Obs2; network is cited.
+  Bridge: Finish
+Action 4: Finish[Fox]
+
+================================================================
+(End of examples)
+================================================================
+
+Now answer the next question in the same format.
+- Strictly follow the 4-line (Have / Goal / Gap / Bridge) single-line Thought structure.
+- Have contains ONLY quotes from Observations — never fill it with prior knowledge or guesses.
+- Check at every step that Have's entity matches the question's entity in era / nationality / scope.
+  If it does not, add a "verification gap" to Gap and do NOT Finish.
+- NEVER output an empty Action. If stuck, output Finish[<best partial / "information unavailable">].
+
+Question: {question}{scratchpad}

@@ -17,7 +17,7 @@ from langchain.docstore.base import Docstore
 from langchain.agents.react.base import DocstoreExplorer
 from langchain.prompts import PromptTemplate
 from collections import Counter
-from langchain.utilities import BingSearchAPIWrapper
+from openai import OpenAI as _OpenAIClient
 
 
 from hotpotqa_run.pre_prompt import knowagent_prompt
@@ -25,7 +25,14 @@ from hotpotqa_run.fewshots import KNOWAGENT_EXAMPLE
 
 from hotpotqa_run.llms import token_enc
 
-from hotpotqa_run.config import BING_SUBSCRIPTION_KEY
+# Search 클라이언트 (Bing v7 deprecation 후 Tavily로 전환).
+# Tavily는 raw search snippets 반환 — Bing과 같은 format으로 LLM 후처리 없음.
+from hotpotqa_run.config import TAVILY_API_KEY
+try:
+    from tavily import TavilyClient
+    _TAVILY_CLIENT = TavilyClient(api_key=TAVILY_API_KEY) if TAVILY_API_KEY != "empty_key" else None
+except ImportError:
+    _TAVILY_CLIENT = None
 
 def parse_action(string):
     pattern = r'^(\w+)\[(.+)\]$' 
@@ -141,11 +148,19 @@ class BaseAgent:
             self.step()
 
     def prompt_agent(self) -> str:
+        import os as _os
+        _prompt = self._build_agent_prompt()
+        if _os.environ.get("KNOWAGENT_DEBUG"):
+            print(f"[DEBUG prompt tail] ...{_prompt[-120:]!r}")
         try:
-            generation = self.llm(self._build_agent_prompt())
+            generation = self.llm(_prompt)
             self.check_run_error(generation)
-        except:
+        except Exception as _e:
+            if _os.environ.get("KNOWAGENT_DEBUG"):
+                print(f"[DEBUG prompt_agent EXCEPTION] {type(_e).__name__}: {_e}")
             generation = ""
+        if _os.environ.get("KNOWAGENT_DEBUG"):
+            print(f"[DEBUG raw LLM output] repr={generation!r}")
         return format_step(generation)
  
     def check_run_error(self, text):
@@ -175,21 +190,82 @@ class BaseAgent:
         self.question = question
         self.key = key
 
+    def _strip_echoed_prefix(self, text: str, prefix: str) -> str:
+        t = text.lstrip()
+        if t.startswith(prefix):
+            t = t[len(prefix):].lstrip(': ').lstrip()
+        return t
+
+    def _single_step_generate(self) -> tuple[str, str, str]:
+        """Chat 모델용: ActionPath/Thought/Action을 한 번의 LLM 호출로 생성하고 파싱한다.
+
+        반환: (action_path_text, thought_text, action_text)
+        """
+        self.scratchpad += f'\nActionPath {self.step_n}:'
+        full = ""
+        try:
+            # stop=["Observation"]로 다음 스텝 전까지만 생성
+            full = self.llm(
+                self._build_agent_prompt(),
+                stop=[f"\nObservation {self.step_n}:", "Observation:"],
+                max_tokens=600,
+            )
+        except TypeError:
+            try:
+                full = self.llm(self._build_agent_prompt())
+            except Exception:
+                full = ""
+        except Exception:
+            full = ""
+
+        # Parse 3개 필드 (줄 단위로 정규식)
+        ap_match = re.search(
+            rf'ActionPath\s*{self.step_n}\s*:\s*(.*?)(?=\n\s*Thought\s*{self.step_n}|\Z)',
+            full, re.DOTALL)
+        th_match = re.search(
+            rf'Thought\s*{self.step_n}\s*:\s*(.*?)(?=\n\s*Action\s*{self.step_n}|\Z)',
+            full, re.DOTALL)
+        ac_match = re.search(
+            rf'Action\s*{self.step_n}\s*:\s*(.*?)(?=\n|\Z)',
+            full, re.DOTALL)
+
+        action_path = ap_match.group(1).strip() if ap_match else ""
+        thought     = th_match.group(1).strip() if th_match else ""
+        action_text = ac_match.group(1).strip() if ac_match else ""
+
+        import os as _os
+        if _os.environ.get("KNOWAGENT_DEBUG"):
+            print(f"[DEBUG single_step] raw={full[:200]!r}")
+            print(f"[DEBUG single_step] parsed path={action_path!r} thought={thought[:50]!r} action={action_text!r}")
+
+        # scratchpad 재구성
+        # ActionPath 뒤에 나머지 추가
+        self.scratchpad += ' ' + action_path
+        self.scratchpad += f'\nThought {self.step_n}: ' + thought
+        self.scratchpad += f'\nAction {self.step_n}: ' + action_text
+        print(f'ActionPath {self.step_n}: {action_path}')
+        print(f'Thought {self.step_n}: {thought[:80]}')
+        print(f'Action {self.step_n}: {action_text}')
+        return action_path, thought, action_text
+
     def _actionpath(self):
         self.scratchpad += f'\nActionPath {self.step_n}:'
         action_path = self.prompt_agent()
+        action_path = self._strip_echoed_prefix(action_path, f'ActionPath {self.step_n}')
         self.scratchpad += ' ' + action_path
         print(self.scratchpad.split('\n')[-1])
 
     def _think(self):
         self.scratchpad += f'\nThought {self.step_n}:'
         thought = self.prompt_agent()
+        thought = self._strip_echoed_prefix(thought, f'Thought {self.step_n}')
         self.scratchpad += ' ' + thought
         print(self.scratchpad.split('\n')[-1])
 
     def _action(self):
         self.scratchpad += f'\nAction {self.step_n}:'
         action = self.prompt_agent()
+        action = self._strip_echoed_prefix(action, f'Action {self.step_n}')
         pattern = re.compile(r'\s+(?=\[)')
         action = pattern.sub('', action)
         self.scratchpad += ' ' + action
@@ -198,16 +274,33 @@ class BaseAgent:
         return action_type, argument
 
     def _bingsearch(self, argument):
+        """Bing Search API v7 deprecation 대응 — Tavily로 raw snippets 호출.
+        Tavily는 LLM 후처리 없이 search 결과(title/url/content)를 그대로 반환,
+        Bing snippets와 같은 성격을 유지한다.
+        결과 포맷은 search_lookup과 호환되도록 [{"snippet": text, "title": url}]로 정규화."""
+        if _TAVILY_CLIENT is None:
+            return f'Search is unavailable in this environment. Use Retrieve[{argument}] instead to query Wikipedia.'
         result = ''
         try:
-            os.environ["BING_SUBSCRIPTION_KEY"] = BING_SUBSCRIPTION_KEY
-            os.environ["BING_SEARCH_URL"] = "https://api.bing.microsoft.com/v7.0/search"
-
-            bingsearch = BingSearchAPIWrapper(search_kwargs={"mkt": "en-GB"})
-            self.bingsearch_results = bingsearch.results(argument,self.search_results_num)
-            result = self.bingsearch_results[0]['snippet'].replace("<b>","").replace("</b>","")
-        except:
-            self.scratchpad += f'Search error,please try again'
+            resp = _TAVILY_CLIENT.search(
+                argument,
+                search_depth="basic",
+                max_results=self.search_results_num,
+            )
+            results = resp.get("results", [])
+            self.bingsearch_results = [
+                {"snippet": r.get("content", ""), "title": r.get("title", "") or r.get("url", "")}
+                for r in results
+            ]
+            if results:
+                top = results[0]
+                snippet = (top.get("content") or "")[:500]
+                title = top.get("title") or top.get("url") or "tavily"
+                result = f"{title}: {snippet}" if snippet else snippet or "No results returned."
+            else:
+                result = "No results returned."
+        except Exception:
+            self.scratchpad += 'Search error,please try again'
         return result
 
     def search_lookup(self, argument):
@@ -305,11 +398,12 @@ class KnowAgentHotpotQA(BaseAgent):
         self.examples = KNOWAGENT_EXAMPLE
         self.agent_prompt = knowagent_prompt
         self.name = "KnowAgentHotpotQA"
-    
+
     def forward(self):
-        self._actionpath()
-        self._think()
-        action_type, argument = self._action()
+        _action_path, _thought, action_text = self._single_step_generate()
+        pattern = re.compile(r'\s+(?=\[)')
+        action_text = pattern.sub('', action_text)
+        action_type, argument = parse_action(action_text)
         return action_type, argument
 
     def _build_agent_prompt(self) -> str:

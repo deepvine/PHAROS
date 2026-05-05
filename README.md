@@ -1,165 +1,141 @@
+# PHAROS — Goal-Conditioned First-Action Prior for LLM Agents
 
+> Mitigating direction bias in KnowAgent-style ICL agents through a minimal, anchoring-free strategic prior.
 
-<div align="center">
-<img src="img/icon.png" width="360px">  
+PHAROS extends [KnowAgent (Zhu et al., NAACL 2025 Findings)](https://arxiv.org/abs/2403.03101) by adding a single LLM call that produces a **3-line strategic prior** before the forward agent executes. The prior contains:
 
+```
+Question type: <one short label>
+Expected answer form: <specific form of the final answer>
+First action: <Retrieve | Search | Either>
+Reason: <one-sentence justification>
+```
 
-  **Knowledge-Augmented Planning for LLM-Based Agents.**
+This prior is injected as `[STRATEGIC PRIOR]` into the existing KnowAgent forward prompt. The forward agent remains autoregressive — the prior acts only as a soft prior on the first action while preserving step-level autonomy on subsequent steps (avoiding *anchoring*).
 
-  <p align="center">
-  <a href="https://arxiv.org/abs/2403.03101">📄Paper</a> •
-  <a href="https://www.zjukg.org/project/KnowAgent/">🌐Web</a>
-	</p>  
+## What's the bias?
 
-[![Awesome](https://awesome.re/badge.svg)](https://github.com/zjunlp/KnowAgent) 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-![](https://img.shields.io/github/last-commit/zjunlp/KnowAgent?color=green) 
+KnowAgent's in-context examples (one starting with `Retrieve`, one with `Search`) suggest a 50/50 first-action distribution, but in practice we measure **Search-First Rate (SFR) of 0.58–0.84** across five benchmarks — biased toward `Search` even on questions where targeted Wikipedia `Retrieve` is more efficient. PHAROS exposes this with the SFR metric and proposes a prompt-level mitigation.
 
-</div>
+## Highlights
 
----
+- **No fine-tuning** — single extra LLM call per task
+- **Drop-in to KnowAgent prompting track** — does not modify the forward agent or action graph
+- **Direction-bias diagnostic (SFR)** — quantifies first-action distortion
+- **5 benchmarks** — HotpotQA (easy/medium/hard), 2WikiMultihopQA, StrategyQA
+- **Bing v7 deprecation handled** — Tavily Search integrated as raw-snippet replacement
 
-<img src="img/method.gif" alt="method"/>
+## Repo Structure
 
-​	Our development is grounded on several key steps: **Initially**, we create an extensive *action knowledge base*, which amalgamates action planning knowledge pertinent to specific tasks. This database acts as an external reservoir of information, steering the model's action generation process.  **Subsequently**, by converting action knowledge into text, we enable the model to deeply understand and utilize this knowledge in creating action trajectories. **Finally**, through a *knowledgeable self-learning* phase, we use trajectories developed from the model's iterative processes to continually improve its understanding and application of action knowledge. This process not only strengthens the agents' planning abilities but also enhances their potential for application in complex situations.
+```
+.
+├── experiments/                # PHAROS extensions (new code)
+│   ├── backward_prompts.py     # prompt templates + file loader
+│   ├── prompts/                # textual prompt definitions
+│   │   └── janus_v3_minimal.txt
+│   ├── backward_agent.py       # strategic-prior generator
+│   ├── bidirectional_agent.py  # PHAROS / Baseline / BackwardOnly agents
+│   ├── run_experiment.py       # main CLI runner
+│   ├── bias_metrics.py         # SFR, FAE, etc.
+│   ├── benchmark_loaders.py    # 2Wiki, StrategyQA loaders
+│   └── results/real/           # experimental result jsonls
+│
+├── Path_Generation/            # KnowAgent base (modified files only annotated)
+│   └── hotpotqa_run/
+│       ├── agent_arch.py       # [MODIFIED] Tavily, single-call forward, oracle
+│       ├── config.py           # [MODIFIED] dotenv, TAVILY_API_KEY
+│       └── llms.py             # [MODIFIED] gpt-4.1-mini support
+│
+├── paper_acl_ko/               # ACL-style LaTeX paper (Korean)
+└── REPORT.md                   # detailed analysis (Korean)
+```
 
-
-
-## 🌟Table of Contents
-
-- [🌟Table of Contents](#table-of-contents)
-- [🔔News](#news)
-- [🔧Installation](#installation)
-- [:world_map:Planning Path Generation](#world_mapplanning-path-generation)
-- [📝Knowledgeable Self-Learning](#%EF%B8%8Fknowledgeable-self-learning)
-- [🔖Citation](#citation)
-- [✨Acknowledgement](#acknowledgement)
-
-
-  
-
-## 🔔News
-- **[2025-01]** Our paper has been accepted to the NAACL 2025 Findings!
-- **[2024-08]** Our paper received the Best Paper Award at the KnowledgeNLP workshop at ACL 2024! 
-- **[2024-03]** We release a new paper: "[KnowAgent: Knowledge-Augmented Planning for LLM-Based Agents](https://arxiv.org/abs/2403.03101)".
-
-  
-## 🔧Installation
-
-To get started with KnowAgent, follow these simple installation steps:
+## Setup
 
 ```bash
-git clone https://github.com/zjunlp/KnowAgent.git
-cd KnowAgent
+git clone https://github.com/deepvine/PHAROS.git
+cd PHAROS
 pip install -r requirements.txt
 ```
 
-We have placed the HotpotQA and ALFWorld datasets under `Path_Generation/alfworld_run/data` and `Path_Generation/hotpotqa_run/data` respectively. For further configuration, we recommend proceeding with the original setup of [ALFWorld](https://github.com/alfworld/alfworld) and [FastChat](https://github.com/lm-sys/FastChat).
-
-## :world_map:Planning Path Generation
-
-The Planning Path Generation process is integral to KnowAgent. You can find the scripts for running the Planning Path Generation in `Path_Generation` directory, specifically `run_alfworld.sh` and `run_hotpotqa.sh`. These scripts can be executed using bash commands. To tailor the scripts to your needs, you may modify the `mode` parameter to switch between training (`train`) and testing (`test`)modes, and change the `llm_name` parameter to use a different LLM:
-
+Create `.env`:
 ```
-cd Path_Generation
-
-# For training with HotpotQA
-python run_hotpotqa.py --llm_name llama-2-13b --max_context_len 4000 --mode train --output_path ../Self-Learning/trajs/
-
-# For testing with HotpotQA
-python run_hotpotqa.py --llm_name llama-2-13b --max_context_len 4000 --mode test --output_path output/
-    
-# For training with ALFWorld
-python alfworld_run/run_alfworld.py --llm_name llama-2-13b --mode train --output_path ../Self-Learning/trajs/
-
-# For testing with ALFWorld
-python alfworld_run/run_alfworld.py --llm_name llama-2-13b --mode test --output_path output/
-```
-Here we release the trajectories synthesized by Llama-{7,13,70}b-chat in [Google Drive](https://drive.google.com/drive/folders/1ULHFvplZhpmfLNE7Oty3dJcl1FCnkHNM?usp=sharing) before Filtering.
-
-## ♟️Knowledgeable Self-Learning
-
-After obtaining the planning paths and corresponding trajectories, the Knowledgeable Self-Learning process begins. The generated trajectories must first be converted into the Alpaca format using the scripts located in the Self-Learning directory.
-
-For the initial iterations, follow the steps outlined in `traj_reformat.sh`:
-
-```
-cd Self-Learning
-# For HotpotQA
-python train/Hotpotqa_reformat.py --input_path trajs/KnowAgentHotpotQA_llama-2-13b.jsonl --output_path train/datas
-
-# For ALFWorld
-python train/ALFWorld_reformat.py --input_path trajs/KnowAgentALFWorld_llama-2-13b.jsonl --output_path train/datas
+OPENAI_API_KEY=sk-...
+TAVILY_API_KEY=tvly-...
 ```
 
-For subsequent iterations, it is essential to perform Knowledge-Based Trajectory Filtering and Merging before running the trajectory reformatting script. 
-You can achieve this using `traj_merge_and_filter.sh`:
+(Tavily provides a free tier of 1k search queries/month — sufficient for the experiments below.)
 
-```
-python trajs/traj_merge_and_filter.py \
-    --task HotpotQA \
-    --input_path1  trajs/datas/KnowAgentHotpotQA_llama-2-13b_D0.jsonl \
-    --input_path2  trajs/datas/KnowAgentHotpotQA_llama-2-13b_D1.jsonl \
-    --output_path   trajs/datas 
-```
+## Run
 
-Next, initiate the Self-Learning process by running `train.sh` and `train_iter.sh`, as specified in the scripts located in `Self-Learning/train.sh` and `Self-Learning/train_iter.sh`:
+```bash
+# Baseline (KnowAgent*) + PHAROS, n=50, HotpotQA easy
+python -m experiments.run_experiment \
+  --benchmark hotpotqa --split easy --n 50 \
+  --bp-mode minimal --skip-backonly
 
-```
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 deepspeed train/train_lora.py \
-    --model_name_or_path  llama-2-13b-chat\
-    --lora_r 8 \
-    --lora_alpha 16 \
-    --lora_dropout 0.05 \
-    --data_path datas/data_knowagent.json \
-    --output_dir models/Hotpotqa/M1 \
-    --num_train_epochs 5 \
-    --per_device_train_batch_size 2 \
-    --per_device_eval_batch_size 1 \
-    --gradient_accumulation_steps 1 \
-    --evaluation_strategy "no" \
-    --save_strategy "steps" \
-    --save_steps 10000 \
-    --save_total_limit 1 \
-    --learning_rate 1e-4 \
-    --weight_decay 0. \
-    --warmup_ratio 0.03 \
-    --lr_scheduler_type "cosine" \
-    --logging_steps 1 \
-    --fp16 True \
-    --model_max_length 4096 \
-    --gradient_checkpointing True \
-    --q_lora False \
-    --deepspeed /data/zyq/FastChat/playground/deepspeed_config_s3.json \
-    --resume_from_checkpoint False 
+# Other splits
+python -m experiments.run_experiment --benchmark hotpotqa --split medium --n 50 --bp-mode minimal --skip-backonly
+python -m experiments.run_experiment --benchmark hotpotqa --split hard   --n 50 --bp-mode minimal --skip-backonly
+
+# 2WikiMultihopQA
+python -m experiments.run_experiment --benchmark 2wikimultihopqa --split validation --n 50 --bp-mode minimal --skip-backonly
+
+# StrategyQA
+python -m experiments.run_experiment --benchmark strategyqa --split train --n 50 --bp-mode minimal --skip-backonly
+
+# Retrieve-oracle ablation (force first action = Retrieve)
+python -m experiments.run_experiment --benchmark hotpotqa --split easy --n 50 \
+  --force-retrieve-first --skip-backonly --skip-bidir
 ```
 
-## 🔖Citation
+## Editing the prompt
+
+PHAROS reads its strategic-prior prompt from a plain text file:
+
+```
+experiments/prompts/janus_v3_minimal.txt
+```
+
+Edit this file directly — no code change needed. The prompt is loaded at runtime via `experiments/backward_prompts.py::_load_prompt`.
+
+## Results (n=50 per split, gpt-4.1-mini, Tavily Search active)
+
+| Benchmark | KA* EM | PHAROS EM | ΔEM strict |
+|-----------|--------|-----------|-----------|
+| HotpotQA easy | 0.380 | 0.280 | −0.10 |
+| HotpotQA medium | 0.340 | **0.440** | **+0.10** |
+| HotpotQA hard | 0.280 | 0.160 | −0.12 |
+| 2WikiMultihopQA | 0.260 | 0.140 | −0.12 |
+| StrategyQA | 0.120 | **0.420** | **+0.30** |
+
+PHAROS shows the strongest gains in commonsense yes/no reasoning (StrategyQA) where the *Expected answer form* hint normalises verbose answers into the strict-EM target. On Wikipedia-grounded multi-hop tasks the gain is mixed; see [REPORT.md](REPORT.md) for analysis of context-budget trade-offs and failure modes.
+
+## Citation
+
+If you use PHAROS, please cite both KnowAgent and this work:
 
 ```bibtex
 @article{zhu2024knowagent,
   title={KnowAgent: Knowledge-Augmented Planning for LLM-Based Agents},
-  author={Zhu, Yuqi and Qiao, Shuofei and Ou, Yixin and Deng, Shumin and Zhang, Ningyu and Lyu, Shiwei and Shen, Yue and Liang, Lei and Gu, Jinjie and Chen, Huajun},
+  author={Zhu, Yuqi and Qiao, Shuofei and others},
   journal={arXiv preprint arXiv:2403.03101},
   year={2024}
 }
+
+@misc{pharos2026,
+  title={{PHAROS}: Goal-Conditioned First-Action Prior for LLM Agents},
+  author={(your name)},
+  year={2026},
+  howpublished={\url{https://github.com/deepvine/PHAROS}}
+}
 ```
 
-## ✨Acknowledgement
+## License
 
-- We express our gratitude to the creators and contributors of the following projects, which have significantly influenced the development of KnowAgent:
+This project builds on KnowAgent (Apache 2.0). PHAROS extensions in `experiments/` and modifications to `Path_Generation/` are released under the same license. See [LICENSE.txt](LICENSE.txt).
 
-  - **FastChat**: Our training module code is adapted from FastChat. [Visit FastChat](https://github.com/lm-sys/FastChat)，and Integration with open models through LangChain is facilitated via FastChat. [Learn more about LangChain and FastChat Integration](https://github.com/lm-sys/FastChat/blob/main/docs/langchain_integration.md).
-  - **BOLAA**: The inference module code is implemented based on BOLAA. [Visit BOLAA](https://github.com/salesforce/BOLAA)
-  - Additional baseline codes from **ReAct**, **Reflexion**, **FireAct**, and others have been utilized, showcasing a diverse range of approaches and methodologies.
+## Acknowledgements
 
-  Our heartfelt thanks go out to all contributors for their invaluable contributions to the field!
-
-
-## 🎉Contributors
-
-<a href="https://github.com/zjunlp/knowagent/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=zjunlp/knowagent" /></a>
-
-We will offer long-term maintenance to fix bugs and solve issues. So if you have any problems, please put issues to us.  
-
+- KnowAgent authors (Zhu et al.) for the action-graph framework and ICL prompting baseline.
+- Tavily for the search API used as a Bing-v7 replacement.

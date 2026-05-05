@@ -13,7 +13,16 @@ import argparse
 import warnings
 warnings.filterwarnings('ignore')
 
-OPENAI_API_KEY = "sk-xxxxxxx"
+from pathlib import Path
+try:
+    from dotenv import load_dotenv
+    _env_path = Path(__file__).resolve().parents[2] / ".env"
+    if _env_path.exists():
+        load_dotenv(_env_path)
+except ImportError:
+    pass
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "sk-xxxxxxx")
 os.environ['OPENAI_API_KEY'] = OPENAI_API_KEY
 
 parser = argparse.ArgumentParser(description='Run the ALFWORLD task with a specified LLM model.')

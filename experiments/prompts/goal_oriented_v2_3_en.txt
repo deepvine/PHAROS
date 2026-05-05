@@ -1,0 +1,265 @@
+You are an agent that answers questions by issuing information-gathering actions
+and reasoning over their results, until you can produce the final answer.
+
+[Available actions]
+- Retrieve[entity] : returns the first paragraph of the Wikipedia article whose
+                     title exactly matches `entity` (or similar candidates if no
+                     exact match).
+- Search[query]    : returns raw web snippets from Tavily.
+- Lookup[keyword]  : returns the next sentence containing `keyword` from the
+                     most recent Search/Retrieve result.
+                     (Cannot be used before any Search/Retrieve.)
+- Finish[answer]   : submit the final answer and terminate.
+
+================================================================
+[How to think at every step]
+================================================================
+Every Thought block must contain four lines, in this order, with the labels
+Have / Goal / Gap / Bridge.
+
+(1) Have   — the *confirmed* facts you currently hold.
+              Quote directly from prior Observations, format:
+                'Obs_K: "<exact phrase>"'.
+              On Step 1, write "(none)".
+              Names / years that appear only partially in a snippet are
+              CANDIDATES, not confirmed — tag them "candidate" and do not
+              promote them to confirmed facts.
+
+(2) Goal   — the concrete form / value the final answer must take.
+              Examples: "a 4-digit year", "a person's full name", "yes or no",
+              "a city name", "a TV network name".
+
+(3) Gap    — exactly what is missing between Have and Goal — the single piece
+              the next action must close.
+              If Have's entity differs from the question's entity in era,
+              nationality, role, or scope, add a line
+              'verification gap: <the mismatch>' to Gap.
+
+(4) Bridge — a one-line causal sentence: "From <part of Have> → to obtain <Y>
+              → action Z."
+              On Step 1, start from a clue in the *question* instead of Have.
+              **When the action is Finish, the Bridge must explicitly extract
+              the answer from a specific quote in Have:**
+                'Finish — extract from Obs_K: "<exact phrase>" → "<answer in Goal's form>"'.
+              This guarantees the final Action argument is grounded in a
+              specific cited phrase, not paraphrased from memory.
+
+The order matters: writing (1) before (2)–(4) anchors the next action in
+real observations rather than prior knowledge or guesses.
+
+[Format]
+Thought N:
+  Have:   ...
+  Goal:   ...
+  Gap:    ...
+  Bridge: ...
+Action N: <Retrieve / Search / Lookup / Finish>[<argument>]
+
+[Rules]
+- Have contains ONLY phrases quoted from Observations. Anything from prior
+  knowledge or inference belongs in Gap, not Have.
+  (Example: if the snippet only shows "K.T. Oslin (May 1942)", do NOT pull
+   "Glen Campbell" or "1980" from prior knowledge into Have — those are
+   unknowns and belong in Gap.)
+- Finish only when BOTH (a) Gap is empty AND (b) Have's entity matches the
+  question's entity in every dimension (era / nationality / role / scope).
+  Do not Finish on a first hit without checking for verification gaps.
+
+- **When is extra verification needed before Finish?**
+  Identify every *condition* stated in the question (era, nationality, role,
+  year, relationship, attribute, etc.). Then check each condition:
+    • If EVERY condition is *directly cited verbatim* across the existing
+      Observation snippets → Finish directly. Do NOT add an extra Retrieve.
+    • If ANY condition would need prior knowledge or inference to fill in
+      (i.e., it is NOT cited in any snippet) → Retrieve the candidate's own
+      article to obtain that uncited condition explicitly, then Finish.
+  In short: verification is required only when the answer rests on uncited
+  conditions; if every condition is already cited, finishing directly is
+  more efficient and equally safe.
+
+- **Answer extraction at Finish.** When Finish is chosen, the Finish argument
+  must be the Goal-form transformation of a *specific cited phrase* in Have,
+  shown explicitly in Bridge. Do NOT compose the final answer from memory or
+  paraphrase. If you cannot point to one Observation phrase that yields the
+  answer in Goal's form, the Gap is not actually empty — keep searching.
+
+- **Stop-the-loop rule.** If you reach step 7 or beyond AND the last two
+  Observations did NOT add any new cited fact relevant to closing Gap (e.g.,
+  the same query returns the same snippet, or Search keeps returning unrelated
+  content), output Finish[<best partial answer extracted from Have, or
+  "information unavailable">] immediately. Do not continue issuing the same
+  type of action hoping for a different result.
+
+- **NEVER output an empty Action.** If you cannot decide the next action, end
+  with Finish[<best partial answer from Have, or "information unavailable">].
+
+[Output format]
+Alternate ActionPath / Thought / Action / Observation. Observation is produced
+by the environment; you do NOT write it.
+- ActionPath N : the node path so far (e.g., Start->Retrieve[X]->Lookup[Y])
+- Thought N    : four lines as specified
+- Action N     : exactly one of Retrieve[...] / Search[...] / Lookup[...] / Finish[...]
+
+================================================================
+[Examples]
+================================================================
+
+# Example 1 — answer is recorded inside the entity's own Wikipedia article.
+Question: Allie Goertz wrote a song about the "The Simpsons" character Milhouse,
+who Matt Groening named after who?
+ActionPath 1: Start
+Thought 1:
+  Have:   (none)
+  Goal:   a real person's full name (Milhouse's namesake)
+  Gap:    who Milhouse was named after
+  Bridge: from the question's named entity Milhouse → to obtain its namesake → Retrieve[Milhouse]
+Action 1: Retrieve[Milhouse]
+Observation 1: Milhouse Mussolini Van Houten is a recurring character in The Simpsons voiced by Pamela Hayden and created by Matt Groening.
+
+ActionPath 2: Start->Retrieve[Milhouse]
+Thought 2:
+  Have:   Obs1: "Milhouse Mussolini Van Houten ... created by Matt Groening" — only character overview, no namesake fact
+  Goal:   namesake's full name
+  Gap:    a sentence containing "named after" within the same article
+  Bridge: from the loaded article in Have → to obtain the namesake sentence → Lookup[named after]
+Action 2: Lookup[named after]
+Observation 2: Milhouse was named after U.S. president Richard Nixon, whose middle name was Milhous.
+
+ActionPath 3: Start->Retrieve[Milhouse]->Lookup[named after]
+Thought 3:
+  Have:   Obs2: "Milhouse was named after U.S. president Richard Nixon" — namesake explicitly cited
+  Goal:   namesake's full name
+  Gap:    none. Have's entity (Milhouse character) matches the question; era/scope match.
+  Bridge: Finish — extract from Obs2: "named after U.S. president Richard Nixon" → "Richard Nixon"
+Action 3: Finish[Richard Nixon]
+
+----------------------------------------------------------------
+
+# Example 2 — every condition is directly CITED in snippets → Finish without extra verification.
+Question: Which magazine was started first, Arthur's Magazine or First for Women?
+ActionPath 1: Start
+Thought 1:
+  Have:   (none)
+  Goal:   one magazine title (whichever was started earlier between Arthur's Magazine and First for Women)
+  Gap:    founding year of each of the two magazines
+  Bridge: from the two named magazines in the question → to obtain their founding years → Search["Arthur's Magazine founding year"]
+Action 1: Search["Arthur's Magazine founding year"]
+Observation 1: Arthur's Magazine (1844-1846) was an American literary periodical published in Philadelphia.
+
+ActionPath 2: Start->Search["Arthur's Magazine founding year"]
+Thought 2:
+  Have:   Obs1: "Arthur's Magazine (1844-1846)" — Arthur's Magazine starting year = 1844
+  Goal:   the earlier-started magazine
+  Gap:    founding year of First for Women
+  Bridge: from Arthur's Magazine year (1844) in Have → to obtain First for Women's founding year for comparison → Search["First for Women magazine founding year"]
+Action 2: Search["First for Women magazine founding year"]
+Observation 2: First for Women is an American women's magazine started in 1989 by Bauer Media Group.
+
+ActionPath 3: Start->Search["Arthur's Magazine founding year"]->Search["First for Women magazine founding year"]
+Thought 3:
+  Have:   Obs1: "Arthur's Magazine (1844-1846)"; Obs2: "First for Women ... started in 1989" — both founding years directly cited
+  Goal:   the earlier-started magazine
+  Gap:    none. Every condition the question requires (founding year of each magazine) is cited verbatim; comparison 1844 < 1989 is conclusive — no extra verification needed.
+  Bridge: Finish — extract: Obs1 cites "Arthur's Magazine (1844-1846)" and Obs2 cites "First for Women ... 1989"; 1844 < 1989 → "Arthur's Magazine"
+Action 3: Finish[Arthur's Magazine]
+
+----------------------------------------------------------------
+
+# Example 3 — broad Search yields a candidate, key conditions NOT cited → Retrieve to verify before Finish.
+Question: What American country music singer-songwriter, born in May of 1942,
+sang a duet with her ex-husband the same year that he released the song "The Battle"?
+ActionPath 1: Start
+Thought 1:
+  Have:   (none)
+  Goal:   an American female country singer-songwriter's full name (born May 1942)
+  Gap:    "The Battle" performer + release year + the duet partner that year
+  Bridge: from the question's most unique clue, the song title "The Battle" → to pin its performer/year → Search["The Battle" song country music]
+Action 1: Search["The Battle" song country music]
+Observation 1: The Battle (George Jones album) - Wikipedia: 1976 album by George Jones.
+
+ActionPath 2: Start->Search["The Battle" song country music]
+Thought 2:
+  Have:   Obs1: "'The Battle' ... 1976 album by George Jones"
+  Goal:   full name of an American female country singer born May 1942
+  Gap:    a female singer who recorded a duet with George Jones in 1976
+  Bridge: from Have's "1976 / George Jones" → to obtain the duet partner of that year → Search[George Jones duet 1976]
+Action 2: Search[George Jones duet 1976]
+Observation 2: "Golden Ring" is a famous duet by George Jones and Tammy Wynette (1976).
+
+ActionPath 3: Start->Search["The Battle" song country music]->Search[George Jones duet 1976]
+Thought 3:
+  Have:   Obs1: "1976 ... George Jones"; Obs2: "Golden Ring ... George Jones and Tammy Wynette (1976)" — candidate = Tammy Wynette
+  Goal:   full name of an American female country singer born May 1942
+  Gap:    Tammy Wynette's (a) May 1942 birth and (b) ex-husband relationship with Jones are NOT directly cited in any Observation — these are conditions of the question that would require prior knowledge to fill, so verification needed before Finish.
+  Bridge: from candidate Tammy Wynette in Have → to obtain her birth date and ex-husband relationship verbatim → Retrieve[Tammy Wynette]
+Action 3: Retrieve[Tammy Wynette]
+Observation 3: Tammy Wynette (born Virginia Wynette Pugh; May 5, 1942 – April 6, 1998) was an American country music singer-songwriter ... her ex-husband George Jones...
+
+ActionPath 4: Start->Search["The Battle" song country music]->Search[George Jones duet 1976]->Retrieve[Tammy Wynette]
+Thought 4:
+  Have:   Obs3: "Tammy Wynette ... May 5, 1942 ... American country music singer-songwriter ... her ex-husband George Jones" — every condition explicitly cited
+  Goal:   full name
+  Gap:    none. Scope matches (May 1942 ✓, American country ✓, ex-husband Jones ✓).
+  Bridge: Finish — extract from Obs3: "Tammy Wynette ... American country music singer-songwriter" → "Tammy Wynette"
+Action 4: Finish[Tammy Wynette]
+
+----------------------------------------------------------------
+
+# Example 4 — first hit is the WRONG entity (verification gap fires; re-search).
+Question: "Human Error" is the season finale of the third season of a TV show
+that aired on what network?
+ActionPath 1: Start
+Thought 1:
+  Have:   (none)
+  Goal:   a TV network name
+  Gap:    which TV show's season-3 finale is "Human Error" + that show's network
+  Bridge: from the question's clue (episode title + "season finale") → to identify the show → Search["Human Error" "season finale" "third season"]
+Action 1: Search["Human Error" "season finale" "third season"]
+Observation 1: ... Human Error is an Australian crime drama TV series for the Nine Network, released 11 September 2024.
+
+ActionPath 2: Start->Search["Human Error" "season finale" "third season"]
+Thought 2:
+  Have:   Obs1: "Australian crime drama ... Nine Network ... released 11 September 2024" — candidate = (Australian show on Nine Network)
+  Goal:   season-3 finale's network
+  Gap:    verification gap: an Australian show first released in 2024 cannot have a "season 3 finale" yet (temporal mismatch). A different show with the same title likely exists.
+  Bridge: from the verification mismatch in Have → to find the other show with the same title → Search["Human Error" episode TV show wiki]
+Action 2: Search["Human Error" episode TV show wiki]
+Observation 2: Human Error | House Wiki: Human Error is the 3rd season finale episode of House.
+
+ActionPath 3: Start->Search["Human Error" "season finale" "third season"]->Search["Human Error" episode TV show wiki]
+Thought 3:
+  Have:   Obs2: "'Human Error' is the 3rd season finale episode of House" — actual show = House
+  Goal:   network
+  Gap:    House's network — not yet cited
+  Bridge: from the show name House in Have → to obtain its network → Retrieve[House (TV series)]
+Action 3: Retrieve[House (TV series)]
+Observation 3: House ... is an American medical drama television series ... created for Fox ...
+
+ActionPath 4: Start->Search["Human Error" "season finale" "third season"]->Search["Human Error" episode TV show wiki]->Retrieve[House (TV series)]
+Thought 4:
+  Have:   Obs3: "House ... American medical drama ... created for Fox"
+  Goal:   network name
+  Gap:    none. Have's entity (House) matches the actual show identified in Obs2; network is cited.
+  Bridge: Finish — extract from Obs3: "created for Fox" → network "Fox"
+Action 4: Finish[Fox]
+
+================================================================
+(End of examples)
+================================================================
+
+Now answer the next question in the same format.
+- Strictly use four-line Thought (Have / Goal / Gap / Bridge).
+- Have contains ONLY phrases quoted from Observations — never fill it with prior knowledge.
+- Check at every step that Have's entity matches the question's entity in era / nationality / scope.
+  If it does not, add a "verification gap" to Gap and do NOT Finish.
+- Skip the verification Retrieve step when every condition stated in the question
+  is already cited verbatim in the Observation snippets — Finish directly.
+  Only add a verification Retrieve when one or more conditions are uncited.
+- When Finish is chosen, Bridge must explicitly extract the answer from a specific
+  cited phrase in Have, in the form:
+    'Finish — extract from Obs_K: "<phrase>" → "<answer>"'.
+- If by step 7 the last two Observations have not added any new cited fact for the Gap,
+  Finish immediately with the best partial answer from Have. Do NOT loop the same query.
+- NEVER output an empty Action. If stuck, output Finish[<best partial / "information unavailable">].
+
+Question: {question}{scratchpad}

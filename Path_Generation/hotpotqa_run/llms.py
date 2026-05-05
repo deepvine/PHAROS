@@ -25,7 +25,8 @@ from langchain.prompts.chat import (
 )
 from hotpotqa_run.config import OPENAI_API_KEY
 
-OPENAI_CHAT_MODELS = ["gpt-3.5-turbo","gpt-3.5-turbo-16k-0613","gpt-3.5-turbo-16k","gpt-4-0613","gpt-4-32k-0613"]
+OPENAI_CHAT_MODELS = ["gpt-3.5-turbo","gpt-3.5-turbo-16k-0613","gpt-3.5-turbo-16k","gpt-4-0613","gpt-4-32k-0613",
+                      "gpt-4.1-mini","gpt-4.1","gpt-4.1-nano","gpt-4o","gpt-4o-mini"]
 FASTCHAT_MODELS = ["llama-2-13b-chat","vicuna-7b"]
 os.environ['OPENAI_API_KEY'] = OPENAI_API_KEY
 

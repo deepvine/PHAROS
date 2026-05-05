@@ -185,6 +185,7 @@ class BaseAgent:
         self.step_n = 1
         self.finished = False
         self.scratchpad: str = ''
+        self._consecutive_empty = 0  # cascade detection counter
 
     def set_qa(self, question: str, key: str) -> None:
         self.question = question
@@ -204,10 +205,11 @@ class BaseAgent:
         self.scratchpad += f'\nActionPath {self.step_n}:'
         full = ""
         try:
-            # stop=["Observation"]로 다음 스텝 전까지만 생성
+            # bare "Observation:" 제거 — Thought의 "From Observation N:" 인용 패턴에 걸려
+            # 생성이 즉시 중단되는 cascade halt 방지
             full = self.llm(
                 self._build_agent_prompt(),
-                stop=[f"\nObservation {self.step_n}:", "Observation:"],
+                stop=[f"\nObservation {self.step_n}:"],
                 max_tokens=600,
             )
         except TypeError:
@@ -225,9 +227,12 @@ class BaseAgent:
         th_match = re.search(
             rf'Thought\s*{self.step_n}\s*:\s*(.*?)(?=\n\s*Action\s*{self.step_n}|\Z)',
             full, re.DOTALL)
+        # 숫자 없는 "Action:" 형식도 허용 — 모델이 번호를 누락해도 파싱 성공
         ac_match = re.search(
-            rf'Action\s*{self.step_n}\s*:\s*(.*?)(?=\n|\Z)',
-            full, re.DOTALL)
+            rf'Action\s*{self.step_n}\s*:\s*([^\n]+)',
+            full) or re.search(
+            r'Action\s*:\s*([^\n]+)',
+            full)
 
         action_path = ap_match.group(1).strip() if ap_match else ""
         thought     = th_match.group(1).strip() if th_match else ""
@@ -323,14 +328,28 @@ class BaseAgent:
                 return "No results found."
 
     def step(self) -> None:
-        
+
         # agent forward
         ret = self.forward()
         if ret:
             action_type, argument = ret[0], ret[1]
         else:
             action_type = ret
-        
+
+        # cascade detection: 빈 action이 2번 연속이면 즉시 종료
+        # (stop sequence 오발동으로 생긴 empty step이 scratchpad에 쌓여
+        #  모델이 빈 패턴을 모방하는 self-reinforcing halt 방지)
+        if not action_type:
+            self._consecutive_empty += 1
+            if self._consecutive_empty >= 2:
+                self.answer = 'information unavailable'
+                self.finished = True
+                self.scratchpad += f'\nObservation {self.step_n}: Cascade empty — forced stop.'
+                self.step_n += 1
+                return
+        else:
+            self._consecutive_empty = 0
+
         # Observe
         self.scratchpad += f'\nObservation {self.step_n}: '
         

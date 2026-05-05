@@ -40,6 +40,10 @@ Have / Goal / Gap / Bridge.
               wrap it in a sentence ("Yes, both are projects in New York.") or
               add explanation ("Golf Magazine is owned by Time Inc"). Just the
               raw value.
+              IMPORTANT — preserve multi-word suffixes that are part of the
+              official name: "a county name" → keep "Lawrence County" not
+              "Lawrence"; "a city with state" → keep "Uniondale, New York" not
+              "Uniondale". Only strip words that are NOT part of the proper name.
 
 (3) Gap    — exactly what is missing between Have and Goal — the single piece
               the next action must close.
@@ -250,6 +254,36 @@ Thought 4:
   Gap:    none. Have's entity (House) matches the actual show identified in Obs2; network is cited.
   Bridge: Finish
 Action 4: Finish[Fox]
+
+----------------------------------------------------------------
+
+# Example 5 — Retrieve fails ("Could not find") → fall back to Search; never fabricate a quote.
+Question: When was James Chaney born?
+ActionPath 1: Start
+Thought 1:
+  Have:   (none)
+  Goal:   a birth date for James Chaney
+  Gap:    James Chaney's birth date
+  Bridge: from the question's named entity James Chaney → to obtain his birth date → Retrieve[James Chaney]
+Action 1: Retrieve[James Chaney]
+Observation 1: Could not find [James Chaney]. Similar: ['James E. Chaney', 'Murders of Chaney, Goodman, and Schwerner', 'James Chaney (disambiguation)']
+
+ActionPath 2: Start->Retrieve[James Chaney]
+Thought 2:
+  Have:   (none) — Obs1 is a "Could not find" error, no fact to quote; do NOT invent a quote from prior knowledge.
+  Goal:   a birth date for James Chaney
+  Gap:    Retrieve failed; try web search or a similar title from the suggestion list
+  Bridge: from the failed Retrieve → to locate James Chaney's birth date via Search
+Action 2: Search[James Chaney civil rights activist]
+Observation 2: James Earl Chaney (May 30, 1943 – June 21, 1964) was an American civil rights activist murdered in Mississippi.
+
+ActionPath 3: Start->Retrieve[James Chaney]->Search[James Chaney civil rights activist]
+Thought 3:
+  Have:   Obs2: "James Earl Chaney (May 30, 1943 – June 21, 1964)" — birth date explicitly cited
+  Goal:   a birth date
+  Gap:    none.
+  Bridge: Finish
+Action 3: Finish[May 30, 1943]
 
 ================================================================
 (End of examples)
